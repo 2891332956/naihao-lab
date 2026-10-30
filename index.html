@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>奶豪鉴定所 · 测测你的奶家人值</title>
+    <meta
+      name="description"
+      content="打开摄像头跟着奶蛙做一遍，本地算法比对动作与节奏，生成你的奶家人值和专属称号：奶王、奶后、奶家人、奶狗、奶使。视频不出本机，纯属娱乐。"
+    />
+    <meta name="theme-color" content="#FFF7E9" />
+    <meta property="og:title" content="奶豪鉴定所 · 测测你的奶家人值" />
+    <meta
+      property="og:description"
+      content="你是几级奶家人？打开摄像头，测出奶家人值，领取奶王 / 奶后 / 奶家人 / 奶狗 / 奶使称号。"
+    />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="toast-root" aria-live="polite"></div>
+    <noscript>
+      <div class="noscript">奶豪鉴定所需要 JavaScript 才能运行，请打开浏览器 JavaScript 后重试。</div>
+    </noscript>
+    <script>
+      // 收集运行时错误，方便无头浏览器自检
+      window.__ERRORS__ = []
+      window.addEventListener('error', (e) => {
+        window.__ERRORS__.push(String((e && (e.message || e.error)) || e))
+      })
+      window.addEventListener('unhandledrejection', (e) => {
+        window.__ERRORS__.push('unhandledrejection: ' + String(e.reason))
+      })
+    </script>
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
