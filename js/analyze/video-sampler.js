@@ -4,22 +4,25 @@
  *   { gray: Float32Array(64*64), width: 64, height: 64, t: number }
  *
  * 设计要点：
- * - 画面按「覆盖裁剪」缩放到 64×64 再转灰度，尽量消除黑边与画幅差异；
+ * - 完整画面等比缩放到 64×64，白色留边，避免裁掉手臂；
  * - 固定间隔 seek 抽帧，保证结果可复现；
  * - 全程在浏览器本地完成，视频不会上传。
  */
 export const CANON_SIZE = 64
 
-/** 文件与摄像头使用同样的中心裁剪、灰度转换，避免入口改变分数尺度。 */
+/** 文件与摄像头都保留完整画面，再以相同方式转灰度。 */
 export function createFrameReader(video) {
   const canvas = document.createElement('canvas')
   canvas.width = CANON_SIZE
   canvas.height = CANON_SIZE
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   return (t) => {
-    const side = Math.min(video.videoWidth, video.videoHeight)
-    if (!side || video.readyState < 2) throw new Error('摄像头或视频画面尚未就绪，请重试。')
-    ctx.drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, CANON_SIZE, CANON_SIZE)
+    const width=video.videoWidth,height=video.videoHeight
+    if (!width || !height || video.readyState < 2) throw new Error('摄像头或视频画面尚未就绪，请重试。')
+    const scale=CANON_SIZE/Math.max(width,height),w=width*scale,h=height*scale
+    ctx.fillStyle='#fff'
+    ctx.fillRect(0,0,CANON_SIZE,CANON_SIZE)
+    ctx.drawImage(video,0,0,width,height,(CANON_SIZE-w)/2,(CANON_SIZE-h)/2,w,h)
     const rgba = ctx.getImageData(0, 0, CANON_SIZE, CANON_SIZE).data
     const gray = new Float32Array(CANON_SIZE * CANON_SIZE)
     for (let p = 0, j = 0; p < rgba.length; p += 4, j++) {

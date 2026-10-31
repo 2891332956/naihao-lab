@@ -1,5 +1,5 @@
 /** 浏览器本地姿态模型；所有脚本、WASM 与权重均从本站按需加载。 */
-import { normalizePose, POSE_TARGETS, summarizePose } from './pose-core.js'
+import { normalizePose, poseFramingMessage, POSE_TARGETS, summarizePose } from './pose-core.js'
 import { sampleVideo } from './video-sampler.js'
 import { createAnalysisResult } from './scoring.js'
 
@@ -16,24 +16,17 @@ export async function loadPoseEngine() {
     minPoseDetectionConfidence:.5,minPosePresenceConfidence:.5,minTrackingConfidence:.5,
     outputSegmentationMasks:false,
   })
-  const canvas=document.createElement('canvas')
-  canvas.width=canvas.height=512
-  const context=canvas.getContext('2d')
   let timestamp=0,closed=false
   return {
     readFrame(video,t,mirrored=false) {
       if(closed) throw new Error('姿势识别已关闭，请重新开始。')
       timestamp=Math.max(timestamp+1,performance.now())
-      let input=video,aspect=video.videoWidth/video.videoHeight
-      if(mirrored) {
-        const side=Math.min(video.videoWidth,video.videoHeight)
-        context.drawImage(video,(video.videoWidth-side)/2,(video.videoHeight-side)/2,side,side,0,0,512,512)
-        input=canvas
-        aspect=1
-      }
-      const result=detector.detectForVideo(input,timestamp)
+      // 使用整个摄像头画面；镜像只变换坐标，不能裁掉两侧的手臂。
+      const aspect=video.videoWidth/video.videoHeight
+      const result=detector.detectForVideo(video,timestamp)
+      const pose=normalizePose(result.landmarks[0],{aspect,mirrored})
       return {
-        pose:normalizePose(result.landmarks[0],{aspect,mirrored}),t,
+        pose,t,framing:pose?'':poseFramingMessage(result.landmarks[0]),
       }
     },
     close(){if(!closed){closed=true;detector.close()}},

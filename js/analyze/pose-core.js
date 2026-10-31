@@ -10,19 +10,30 @@ const joints=['leftElbow','leftWrist','rightElbow','rightWrist']
 const clamp=(v,a=0,b=100)=>Math.max(a,Math.min(b,v))
 const mean=a=>a.reduce((s,v)=>s+v,0)/Math.max(1,a.length)
 const round=v=>Math.round(v*10)/10
+const visible=(landmarks,i)=>{
+  const p=landmarks?.[i]
+  return p && Number.isFinite(p.x) && Number.isFinite(p.y) &&
+    p.x>=-.05 && p.x<=1.05 && p.y>=-.05 && p.y<=1.05 &&
+    (p.visibility??0)>=.55 && (p.presence??1)>=.55
+}
+
+export function poseFramingMessage(landmarks) {
+  if(![11,12].every(i=>visible(landmarks,i))) return '还没看清双肩，请面向镜头并调整光线。'
+  if(![15,16].every(i=>visible(landmarks,i))) return '请让双手留在画面里，稍微后退或把镜头放远。'
+  return '请让双肩和双臂完整入镜，避免手臂被遮挡。'
+}
 
 export function normalizePose(landmarks, { aspect=1, mirrored=false }={}) {
-  const ids=[11,12,13,14,15,16,23,24]
-  if (!ids.every(i=>{
-    const p=landmarks?.[i]
-    return p && Number.isFinite(p.x) && Number.isFinite(p.y) &&
-      p.x>=-.05 && p.x<=1.05 && p.y>=-.05 && p.y<=1.05 &&
-      (p.visibility??0)>=.55 && (p.presence??1)>=.55
-  })) return null
+  const ids=[11,12,13,14,15,16]
+  if (!ids.every(i=>visible(landmarks,i))) return null
   const p=i=>({x:(mirrored?1-landmarks[i].x:landmarks[i].x)*aspect,y:landmarks[i].y})
-  const a=p(11),b=p(12),h1=p(23),h2=p(24)
-  const hip={x:(h1.x+h2.x)/2,y:(h1.y+h2.y)/2}
+  const a=p(11),b=p(12)
   const shoulder={x:(a.x+b.x)/2,y:(a.y+b.y)/2}
+  // 坐姿常看不到髋部；此时按肩宽估算躯干，并降低置信度。手臂仍须真实可见。
+  const hipsVisible=[23,24].every(i=>visible(landmarks,i))
+  const hip=hipsVisible
+    ? {x:(p(23).x+p(24).x)/2,y:(p(23).y+p(24).y)/2}
+    : {x:shoulder.x,y:shoulder.y+Math.abs(a.x-b.x)*1.25}
   const width=Math.abs(a.x-b.x),height=hip.y-shoulder.y
   if(width<.06*aspect || height<.08) return null
   const left=a.x<b.x?11:12,right=left===11?12:11
@@ -30,7 +41,7 @@ export function normalizePose(landmarks, { aspect=1, mirrored=false }={}) {
   return {
     leftElbow:point(left+2),leftWrist:point(left+4),
     rightElbow:point(right+2),rightWrist:point(right+4),
-    quality:mean(ids.map(i=>Math.min(landmarks[i].visibility,landmarks[i].presence??1))),
+    quality:mean((hipsVisible?[...ids,23,24]:ids).map(i=>Math.min(landmarks[i].visibility,landmarks[i].presence??1)))*(hipsVisible?1:.85),
   }
 }
 export function scorePose(pose,target) {
@@ -47,7 +58,7 @@ export function summarizePose(frames,target,{duration=5}={}) {
   if(duration<3) throw new Error('姿势挑战的视频至少 3 秒，建议保持 5 秒。')
   const visible=frames.filter(f=>f.pose)
   if(visible.length<6 || visible.length/Math.max(1,frames.length)<.6) {
-    throw new Error('没有持续看清上半身，请让双肩、双手和髋部完整入镜后重试。')
+    throw new Error('没有持续看清上半身，请让双肩和双手完整入镜后重试；坐着也可以，不要求髋部入镜。')
   }
   const scores=visible.map(f=>scorePose(f.pose,target))
   const motion=[]

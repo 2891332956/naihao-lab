@@ -81,7 +81,7 @@ function stepperMarkup({ demoOk, userOk }) {
 function demoPanelMarkup(challenge) {
   const pose=challenge.kind==='pose'
   const steps=pose
-    ? [{name:challenge.name,desc:challenge.desc},{name:'完整入镜',desc:'请让双肩、双手和髋部留在画面中。'},{name:'保持 5 秒',desc:'上半身按手臂与手腕位置匹配，表情和下肢暂不计分。'}]
+    ? [{name:challenge.name,desc:challenge.desc},{name:'上半身入镜',desc:'请让双肩和双手留在画面中，坐着也可以。'},{name:'保持 5 秒',desc:'上半身按手臂与手腕位置匹配，表情和下肢暂不计分。'}]
     : challenge.steps
   return `
     <div class="demo-stage ${pose?'pose-demo-stage':''}">
@@ -136,19 +136,25 @@ function cameraPanelMarkup(challenge) {
       <div class="camera-stage">
         <video id="camera-video" class="camera-video" muted autoplay playsinline aria-label="你的镜像取景画面"></video>
         <div class="camera-placeholder" id="camera-placeholder">${icon('video',{size:40})}<strong>镜头前，直接测。</strong><span>本轮：${esc(challenge.name)} · ${pose?'保持 5 秒':'跟做最多 15 秒'}</span></div>
-        <div class="camera-guide" id="camera-guide" hidden><span>${pose?'让双肩、双手和髋部完整入镜':'让头、双手和膝盖留在框内'}</span></div>
+        <div class="camera-guide" id="camera-guide" hidden><span>${pose?'双肩和双手入镜，坐着也可以':'让头、双手和膝盖留在画面内'}</span></div>
         <video id="camera-reference" class="camera-reference" muted playsinline preload="metadata" src="${esc(pose?NAIWA.demo.video:challenge.src)}" poster="${esc(NAIWA.demo.poster||'')}" aria-label="跟做示范" hidden></video>
         <img id="camera-pose-reference" class="camera-reference" src="${esc(pose?challenge.src:NAIWA.references[0].src)}" alt="${pose?esc(challenge.name):'姿势参考'}" hidden>
+        <p id="pose-feedback" class="pose-feedback" role="status" aria-live="polite" hidden>先检查上半身是否入镜，再开始计时。</p>
         <div id="camera-countdown" class="camera-countdown" role="status" aria-live="polite" hidden></div>
       </div>
       <p id="camera-status" class="camera-status" role="status" aria-live="polite">无需录视频文件，也不用上传。只使用摄像头，不开启麦克风。</p>
-      <p id="pose-feedback" class="pose-feedback" role="status" aria-live="polite" ${pose?'':'hidden'}>姿势挑战将检查上半身是否入镜，再匹配选中的姿势。</p>
       <div id="capture-progress" class="capture-progress" role="progressbar" aria-label="跟做进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
+      <div class="camera-actions">
       <button id="camera-open" type="button" class="btn btn-primary btn-lg btn-block">打开摄像头，直接测 ${icon('video',{size:20})}</button>
       <button id="camera-start" type="button" class="btn btn-primary btn-lg btn-block" hidden>我准备好了，开始跟做 ${icon('spark',{size:20})}</button>
       <button id="camera-stop" type="button" class="btn btn-ghost btn-sm camera-stop" hidden>取消并关闭摄像头</button>
+      </div>
       <p class="small muted camera-explainer">3 秒准备后，${pose?'按参考图摆好上半身，保持 5 秒':'跟着同步示范做最多 15 秒'}，完成后自动出分。</p>
-    </section>`
+    </section>
+    <dialog id="camera-dialog" class="camera-dialog" aria-labelledby="camera-dialog-title">
+      <header class="camera-dialog-head"><div><strong id="camera-dialog-title">${esc(challenge.name)}</strong><span>${pose?'上半身挑战 · 累计保持 5 秒':'连续动作 · 跟做最多 15 秒'} · 画面仅在本机处理</span></div><button id="camera-dialog-close" class="btn btn-ghost btn-sm" type="button">关闭取景</button></header>
+      <div id="camera-dialog-body"></div>
+    </dialog>`
 }
 
 function delay(ms, signal) {
@@ -180,6 +186,8 @@ export const NaiwaView = {
       cameraReady: false,
       cameraBusy: false,
       capturing: false,
+      poseReady: false,
+      poseFailed: false,
       loadingDemo: false,
       cameraSequence: null,
       demoSequence: null,
@@ -192,14 +200,29 @@ export const NaiwaView = {
     let poseEngine = null
     let poseLoading = null
     let userFileRequest = 0
+    let posePreviewTimer = null
+    let posePreviewController = null
+
+    function stopPosePreview() {
+      clearTimeout(posePreviewTimer)
+      posePreviewController?.abort()
+      posePreviewController=null
+      state.poseReady=false
+    }
 
     function stopCamera() {
+      stopPosePreview()
       captureController?.abort()
       captureController = null
       cameraSession?.stop()
       cameraSession = null
       state.cameraReady = state.cameraBusy = state.capturing = false
+      state.poseFailed=false
       main.querySelector('#camera-reference')?.pause()
+      const dialog=main.querySelector('#camera-dialog')
+      if(dialog?.open) dialog.close()
+      const mode=main.querySelector('#camera-mode')
+      if(dialog && mode && dialog.contains(mode)) dialog.before(mode)
     }
 
     const demoReady = () => Boolean(hasDefaultDemo || state.tempDemoFile)
@@ -383,21 +406,59 @@ export const NaiwaView = {
       const cameraStop = main.querySelector('#camera-stop')
       const countdown = main.querySelector('#camera-countdown')
       const captureProgress = main.querySelector('#capture-progress')
+      const cameraDialog=main.querySelector('#camera-dialog')
+      const poseFeedback=main.querySelector('#pose-feedback')
 
       function updateCamera() {
         cameraOpen.hidden = state.cameraReady
         cameraOpen.disabled = state.cameraBusy || state.loadingDemo
         cameraOpen.textContent = state.cameraBusy ? '等待摄像头授权…' : '打开摄像头，直接测'
         cameraStart.hidden = !state.cameraReady
-        cameraStart.disabled = !state.cameraReady || state.capturing || state.loadingDemo
-        cameraStart.textContent = state.capturing ? (isPose?'正在保持姿势…':'正在跟做…') : (isPose?'我准备好了，开始摆姿势':'我准备好了，开始跟做')
+        cameraStart.disabled = !state.cameraReady || state.capturing || state.loadingDemo || (isPose && !state.poseReady && !state.poseFailed)
+        cameraStart.textContent = state.capturing ? (isPose?'正在保持姿势…':'正在跟做…') : (isPose?(state.poseFailed?'重试姿势识别':state.poseReady?'入镜就绪，开始摆姿势':'正在检查入镜…'):'我准备好了，开始跟做')
         cameraStop.hidden = !state.cameraReady && !state.cameraBusy
         main.querySelector('#camera-placeholder').hidden = state.cameraReady
         main.querySelector('#camera-guide').hidden = !state.cameraReady || state.capturing
         cameraReference.hidden = !state.cameraReady || isPose
         main.querySelector('#camera-pose-reference').hidden = !state.cameraReady || !isPose
+        poseFeedback.hidden = !state.cameraReady || !isPose
         tempPick.disabled = state.capturing
         tempRemove.disabled = state.capturing
+      }
+
+      async function beginPosePreview() {
+        stopPosePreview()
+        if(!isPose || !state.cameraReady) return
+        const controller=new AbortController()
+        posePreviewController=controller
+        state.poseFailed=false
+        poseFeedback.textContent='正在准备姿势识别，首次打开需要稍等…'
+        updateCamera()
+        try {
+          const engine=await ensurePoseEngine(controller.signal)
+          let readyCount=0
+          const check=()=>{
+            if(controller.signal.aborted || !state.active || !state.cameraReady || state.capturing) return
+            try {
+              const frame=engine.readFrame(cameraVideo,0,true)
+              readyCount=frame.pose?readyCount+1:0
+              state.poseReady=readyCount>=2
+              const message=state.poseReady?'双肩和双手已看清，可以开始；坐着也可以。':frame.pose?'已看到上半身，请稍保持…':frame.framing
+              if(poseFeedback.textContent!==message) poseFeedback.textContent=message
+              poseFeedback.dataset.ready=String(state.poseReady)
+              updateCamera()
+              posePreviewTimer=setTimeout(check,200)
+            } catch(error) { fail(error) }
+          }
+          check()
+        } catch(error) { fail(error) }
+        function fail(error) {
+          if(controller.signal.aborted || !state.active) return
+          state.poseFailed=true
+          state.poseReady=false
+          poseFeedback.textContent=error.message || '姿势识别暂时不可用，请重试。'
+          updateCamera()
+        }
       }
 
       function selectInputMode(mode, clearError = true) {
@@ -432,6 +493,8 @@ export const NaiwaView = {
         }
         state.cameraBusy = true
         showError('')
+        main.querySelector('#camera-dialog-body').append(main.querySelector('#camera-mode'))
+        cameraDialog.showModal()
         cameraStatus.textContent = '请在浏览器提示中允许摄像头。不方便出镜时，也可以选择已有视频。'
         updateCamera()
         const session = createCameraSession(cameraVideo)
@@ -441,7 +504,7 @@ export const NaiwaView = {
           if (!opened || !state.active || cameraSession !== session) return
           state.cameraBusy = false
           state.cameraReady = true
-          cameraStatus.textContent = isPose ? '镜头已打开。让双肩、双手和髋部入镜，按右上角参考图摆好姿势，再开始。' : '镜头已打开。放稳手机，退后一点，让头、双手和膝盖入镜；准备好再开始。'
+          cameraStatus.textContent = isPose ? '请按右上角参考图摆好上半身。看清双肩和双手后，即可开始；无需全身入镜。' : '镜头已打开。放稳手机，退后一点，让头、双手和膝盖入镜；准备好再开始。'
           for (const track of cameraVideo.srcObject.getVideoTracks()) {
             track.addEventListener('ended', () => {
               if (!state.active || cameraSession !== session) return
@@ -451,7 +514,7 @@ export const NaiwaView = {
             }, { once: true })
           }
           updateCamera()
-          cameraVideo.scrollIntoView({ block: 'center', behavior: 'smooth' })
+          if(isPose) beginPosePreview()
         } catch (error) {
           if (!state.active || cameraSession !== session) return
           stopCamera()
@@ -461,21 +524,26 @@ export const NaiwaView = {
         }
       })
 
-      cameraStop.addEventListener('click', () => {
+      function closeCamera() {
         stopCamera()
         state.error = ''
         paintPrepare()
-      })
+      }
+      cameraStop.addEventListener('click',closeCamera)
+      main.querySelector('#camera-dialog-close').addEventListener('click',closeCamera)
+      cameraDialog.addEventListener('cancel',event=>{event.preventDefault();closeCamera()})
 
       cameraStart.addEventListener('click', async () => {
         if (!state.cameraReady || state.capturing || state.loadingDemo) return
+        if(isPose && state.poseFailed) {beginPosePreview();return}
+        if(isPose && !state.poseReady) return
+        stopPosePreview()
         const controller = new AbortController()
         captureController = controller
         const { signal } = controller
         state.capturing = true
         showError('')
         updateCamera()
-        cameraVideo.scrollIntoView({ block: 'center', behavior: 'smooth' })
         countdown.hidden = false
         countdown.textContent = '准备中'
         cameraStatus.textContent = '正在准备参考动作，稍后开始倒计时…'
@@ -483,7 +551,6 @@ export const NaiwaView = {
 
           let reference, engine
           if(isPose) {
-            cameraStatus.textContent='首次使用正在加载本地姿势识别，请稍等；画面不会上传。'
             engine=await ensurePoseEngine(signal)
             reference={duration:5}
           } else {
@@ -519,6 +586,8 @@ export const NaiwaView = {
             duration: reference.duration, fps: isPose?6:LIMITS.sampleFps, signal,
             referenceVideo: isPose?null:cameraReference,
             frameReader: isPose?(video,t)=>engine.readFrame(video,t,true):null,
+            acceptFrame:isPose?frame=>Boolean(frame.pose):null,
+            maxWaitDuration:20,
             onProgress: ({progress,elapsed,duration,sample}) => {
               captureProgress.firstElementChild.style.width = Math.round(progress*100) + '%'
               captureProgress.setAttribute('aria-valuenow',String(Math.round(progress*100)))
@@ -526,7 +595,11 @@ export const NaiwaView = {
               if (seconds !== shownSeconds) {
                 shownSeconds = seconds
                 cameraStatus.textContent = isPose?`保持「${challenge.name}」 ${seconds} / 5 秒`:`正在跟做 ${seconds} / ${Math.ceil(duration)} 秒 · 跟上参考动作的节奏`
-                if(isPose) main.querySelector('#pose-feedback').textContent = sample?.pose?`当前姿势匹配 ${Math.round(scorePose(sample.pose,POSE_TARGETS[challenge.id]))}% · 尽量保持稳定`:'请让双肩、双手和髋部完整入镜。'
+              }
+              if(isPose) {
+                const message=sample?.pose?`当前姿势匹配 ${Math.round(scorePose(sample.pose,POSE_TARGETS[challenge.id]))}% · 尽量保持稳定`:`计时已暂停 · ${sample?.framing||'请让双肩和双手入镜。'}`
+                if(poseFeedback.textContent!==message) poseFeedback.textContent=message
+                poseFeedback.dataset.ready=String(Boolean(sample?.pose))
               }
             },
           })
@@ -538,6 +611,15 @@ export const NaiwaView = {
           paintAnalyzing(nickname)
         } catch (error) {
           if (!state.active || captureController !== controller) return
+          if(isPose && error.name!=='AbortError' && state.cameraReady) {
+            captureController=null
+            state.capturing=false
+            countdown.hidden=true
+            captureProgress.hidden=true
+            cameraStatus.textContent=error.message+' 镜头已保留，调整好后可以直接重试。'
+            beginPosePreview()
+            return
+          }
           stopCamera()
           state.error = error?.name === 'AbortError' ? '' : (error?.message || '本次跟做没有完成，请重试。')
           paintPrepare()

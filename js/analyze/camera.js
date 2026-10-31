@@ -58,7 +58,7 @@ export function cameraErrorMessage(error) {
 }
 
 /** 等间隔采集真实相机帧；掉到后台或长时间卡顿时拒绝不完整结果。 */
-export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrames = 96, referenceVideo, frameReader, signal, onProgress } = {}) {
+export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrames = 96, referenceVideo, frameReader, acceptFrame, maxWaitDuration = duration * 4, signal, onProgress } = {}) {
   if (signal?.aborted) throw abortError()
   if (!Number.isFinite(duration) || duration < .4 || duration > 30) throw new Error('跟做时长无效，请重新开始。')
   const readFrame = frameReader ? t => frameReader(video,t) : createFrameReader(video)
@@ -72,6 +72,8 @@ export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrame
     let previousTick = null
     let lastVideoTime = -1
     let lastFreshAt = 0
+    let lastReadAt = -Infinity
+    let sample
     let settled = false
     const cleanup = () => {
       cancelAnimationFrame(raf)
@@ -104,21 +106,25 @@ export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrame
             throw new Error('示范播放中断或不同步，本次未提交，请重新跟做。')
           }
         }
-        const nextAt = margin + span * frames.length / Math.max(1, expected - 1)
+        const nextAt = acceptFrame ? Math.max(margin,lastReadAt+duration/(expected-1)) : margin + span * frames.length / Math.max(1, expected - 1)
         if (frames.length < expected && elapsed >= nextAt && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
-          frames.push(readFrame(elapsed))
+          sample=readFrame(elapsed)
+          if(!acceptFrame || acceptFrame(sample)) frames.push(sample)
+          lastReadAt=elapsed
           lastVideoTime = video.currentTime
           lastFreshAt = elapsed
         }
         if (elapsed - lastFreshAt > 1.5) throw new Error('摄像头画面停住了，请检查镜头后重试。')
-        onProgress?.({ progress: Math.min(1, elapsed / duration), elapsed, duration, frames: frames.length, sample: frames[frames.length-1] })
-        if (elapsed >= duration) {
+        const held=acceptFrame?Math.max(0,(frames.length-1)/(expected-1))*duration:elapsed
+        onProgress?.({ progress: Math.min(1, held / duration), elapsed:held, wallDuration:elapsed, duration, frames: frames.length, sample })
+        if (acceptFrame ? frames.length>=expected : elapsed>=duration) {
           if (frames.length < Math.max(2, expected * .7)) throw new Error('有效画面太少，请保持页面在前台后重试。')
           settled = true
           cleanup()
-          resolve({ frames, duration, width: 64, height: 64 })
+          resolve({ frames, duration, wallDuration:elapsed, width: 64, height: 64 })
           return
         }
+        if(acceptFrame && elapsed>=maxWaitDuration) throw new Error('还没持续看清双肩和双手，请调整入镜位置后再试一次。')
         raf = requestAnimationFrame(tick)
       } catch (error) { fail(error) }
     }
