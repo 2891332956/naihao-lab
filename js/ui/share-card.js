@@ -2,7 +2,7 @@
  * 称号卡生成：把结果画到 1080×1440 的 Canvas 上，供用户下载分享。
  * Canvas 2D + 本地奶蛙参考图，与站内主形象使用同一组素材。
  */
-import { RANKS, SITE, rankForScore } from '../config.js'
+import { RANKS, SITE, rankForScore, metricMetaFor } from '../config.js'
 import { fmtScore, formatDate, clamp } from './dom.js'
 
 const INK = '#1D2A20'
@@ -135,7 +135,7 @@ export async function renderShareCard(result, opts = {}) {
   ctx.fillText(SITE.name, 88, 120)
   ctx.font = font(700, 20)
   ctx.fillStyle = 'rgba(29,42,32,.65)'
-  ctx.fillText(SITE.en + ' · ' + '奶蛙奶量鉴定', 90, 158)
+  ctx.fillText(result.challengeName ? (result.analysisMode==='pose'?'姿势挑战 · ':'连续动作 · ')+result.challengeName : SITE.en+' · 奶蛙奶量鉴定', 90, 158, 600)
   ctx.textAlign = 'right'
   ctx.font = font(700, 22)
   ctx.fillText('检测报告 / REPORT', W - 92, 122)
@@ -218,12 +218,7 @@ export async function renderShareCard(result, opts = {}) {
   ctx.font = font(500, 20)
   ctx.fillStyle = 'rgba(29,42,32,.55)'
   ctx.fillText('LOCAL MOTION ANALYSIS', panelX + 34, panelY + 74)
-  const metricRows = [
-    ['动作相似度', metrics.action ?? score, '#87D96B'],
-    ['节奏同步', metrics.rhythm ?? score, '#FF9CB8'],
-    ['奶量爆发', metrics.energy ?? score, '#FFD35C'],
-    ['完成度', metrics.completion ?? score, '#8ED0FF'],
-  ]
+  const metricRows = Object.values(metricMetaFor(result)).map(meta=>[meta.label,metrics[meta.key]??score,meta.color])
   metricRows.forEach(([label, value, color], i) => {
     const col = i % 2
     const row = Math.floor(i / 2)

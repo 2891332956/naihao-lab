@@ -6,6 +6,8 @@ import { getNickname, setNickname, addResult, setCurrentResult } from '../store.
 import { analyzeVideos } from '../analyze/scoring.js'
 import { sampleVideo } from '../analyze/video-sampler.js'
 import { createCameraSession, sampleLiveVideo, cameraErrorMessage } from '../analyze/camera.js'
+import { loadPoseEngine, analyzePoseChallenge } from '../analyze/pose-runtime.js'
+import { POSE_TARGETS, scorePose } from '../analyze/pose-core.js'
 import { sfx } from '../ui/sfx.js'
 
 const LIMITS = NAIWA.limits
@@ -75,34 +77,37 @@ function stepperMarkup({ demoOk, userOk }) {
 }
 
 
-function demoPanelMarkup() {
-  const steps = NAIWA.demo.steps || []
+
+function demoPanelMarkup(challenge) {
+  const pose=challenge.kind==='pose'
+  const steps=pose
+    ? [{name:challenge.name,desc:challenge.desc},{name:'完整入镜',desc:'请让双肩、双手和髋部留在画面中。'},{name:'保持 5 秒',desc:'上半身按手臂与手腕位置匹配，表情和下肢暂不计分。'}]
+    : challenge.steps
   return `
-    <div class="demo-stage">
-      <video class="demo-video" controls muted playsinline preload="metadata"
-        poster="${esc(NAIWA.demo.poster || '')}" src="${esc(NAIWA.demo.video || '')}">
-        你的浏览器不支持视频播放。
-      </video>
+    <div class="demo-stage ${pose?'pose-demo-stage':''}">
+      ${pose
+        ? `<img class="pose-demo-image" src="${esc(challenge.src)}" alt="${esc(challenge.alt)}">`
+        : `<video class="demo-video" controls muted playsinline preload="metadata" poster="${esc(challenge.poster||'')}" src="${esc(challenge.src)}">你的浏览器不支持视频播放。</video>`}
     </div>
-    <p class="demo-credit">${esc(NAIWA.demo.credit)}</p>
-    <div class="action-steps">
-      <h3>这一轮，学奶蛙捧腹大笑</h3>
-      <ol>${steps.map(s => `<li><strong>${esc(s.name)}</strong><span>${esc(s.desc)}</span></li>`).join('')}</ol>
+    <p class="demo-credit">${pose?'姿势挑战 · 按镜像取景方向模仿参考图，保持 5 秒。':esc(challenge.credit)}</p>
+    <div class="action-steps"><h3>这一轮，挑战「${esc(challenge.name)}」</h3>
+      <ol>${steps.map(item=>`<li><strong>${esc(item.name)}</strong><span>${esc(item.desc)}</span></li>`).join('')}</ol>
     </div>
-    <details class="reference-details">
-      <summary>看看其他姿势参考</summary>
-      <div class="reference-grid">
-        ${NAIWA.references.map((ref,i) => `<figure class="reference-card">
+    <details class="reference-details" open>
+      <summary>选择姿势挑战 · 五种可选</summary>
+      <div class="reference-grid" role="group" aria-label="选择本轮姿势">
+        ${NAIWA.references.map((ref,i)=>`<button type="button" data-challenge="${ref.id}" class="reference-card ${challenge.id===ref.id?'is-selected':''}" aria-pressed="${challenge.id===ref.id}">
           <img src="${esc(ref.src)}" alt="${esc(ref.alt)}" width="240" height="280" loading="lazy">
-          <figcaption><strong><span>${String(i+1).padStart(2,'0')}</span> ${esc(ref.name)}</strong><p>${esc(ref.desc)}</p></figcaption>
-        </figure>`).join('')}
+          <span class="reference-copy"><strong><span>${String(i+1).padStart(2,'0')}</span> ${esc(ref.name)}</strong>
+          <span class="reference-description">${esc(ref.desc)}</span><span class="pose-choice-label">${challenge.id===ref.id?'✓ 本轮已选择':'选这个姿势 · 保持 5 秒'}</span></span>
+        </button>`).join('')}
       </div>
-      <p class="reference-note">本轮按上方连续示范评分，这些图片仅供学姿势。</p>
+      <button class="btn btn-ghost btn-sm" type="button" data-challenge="laugh" aria-pressed="${challenge.id==='laugh'}">捧腹大笑 · 连续动作 15 秒</button>
     </details>
     <details class="reference-details">
       <summary>想换动作？自选一段示范</summary>
       <div class="temp-demo">
-        <p class="temp-demo-desc">可选择其他示范视频，也可随时恢复内置捧腹大笑。摄像头会按所选示范同步跟做，最长 15 秒。</p>
+        <p class="temp-demo-desc">可选择其他连续示范视频，最长 15 秒；想测静态姿势，直接点击上方卡片即可。</p>
         <input type="file" id="temp-demo-input" accept="video/*" hidden>
         <div class="temp-demo-row">
           <button class="btn btn-ghost btn-sm" id="temp-demo-pick" type="button">${icon('upload',{size:18})} 选择其他示范</button>
@@ -113,9 +118,16 @@ function demoPanelMarkup() {
       </div>
     </details>`
 }
-
-function cameraPanelMarkup() {
+function cameraPanelMarkup(challenge) {
+  const pose=challenge.kind==='pose'
   return `
+    <div class="challenge-field"><label for="challenge-select">本轮挑战</label>
+      <select id="challenge-select">
+        <option value="laugh" ${challenge.id==='laugh'?'selected':''}>捧腹大笑 · 连续动作 15 秒</option>
+        ${NAIWA.references.map(ref=>`<option value="${ref.id}" ${challenge.id===ref.id?'selected':''}>${esc(ref.name)} · 姿势保持 5 秒</option>`).join('')}
+        ${challenge.id==='custom'?'<option value="custom" selected>自选连续示范</option>':''}
+      </select>
+    </div>
     <div class="capture-choice" role="group" aria-label="选择测试方式">
       <button type="button" data-input-mode="camera" aria-pressed="true">摄像头跟做 <small>推荐</small></button>
       <button type="button" data-input-mode="upload" aria-pressed="false">选择已有视频</button>
@@ -123,18 +135,19 @@ function cameraPanelMarkup() {
     <section id="camera-mode" aria-label="摄像头跟做">
       <div class="camera-stage">
         <video id="camera-video" class="camera-video" muted autoplay playsinline aria-label="你的镜像取景画面"></video>
-        <div class="camera-placeholder" id="camera-placeholder">${icon('video',{size:40})}<strong>镜头前，直接测。</strong><span>先允许摄像头，站好后再开始。</span></div>
-        <div class="camera-guide" id="camera-guide" hidden><span>让头、双手和膝盖留在框内</span></div>
-        <video id="camera-reference" class="camera-reference" muted playsinline preload="metadata"
-          src="${esc(NAIWA.demo.video || '')}" poster="${esc(NAIWA.demo.poster || '')}" aria-label="跟做示范" hidden></video>
+        <div class="camera-placeholder" id="camera-placeholder">${icon('video',{size:40})}<strong>镜头前，直接测。</strong><span>本轮：${esc(challenge.name)} · ${pose?'保持 5 秒':'跟做最多 15 秒'}</span></div>
+        <div class="camera-guide" id="camera-guide" hidden><span>${pose?'让双肩、双手和髋部完整入镜':'让头、双手和膝盖留在框内'}</span></div>
+        <video id="camera-reference" class="camera-reference" muted playsinline preload="metadata" src="${esc(pose?NAIWA.demo.video:challenge.src)}" poster="${esc(NAIWA.demo.poster||'')}" aria-label="跟做示范" hidden></video>
+        <img id="camera-pose-reference" class="camera-reference" src="${esc(pose?challenge.src:NAIWA.references[0].src)}" alt="${pose?esc(challenge.name):'姿势参考'}" hidden>
         <div id="camera-countdown" class="camera-countdown" role="status" aria-live="polite" hidden></div>
       </div>
       <p id="camera-status" class="camera-status" role="status" aria-live="polite">无需录视频文件，也不用上传。只使用摄像头，不开启麦克风。</p>
+      <p id="pose-feedback" class="pose-feedback" role="status" aria-live="polite" ${pose?'':'hidden'}>姿势挑战将检查上半身是否入镜，再匹配选中的姿势。</p>
       <div id="capture-progress" class="capture-progress" role="progressbar" aria-label="跟做进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
       <button id="camera-open" type="button" class="btn btn-primary btn-lg btn-block">打开摄像头，直接测 ${icon('video',{size:20})}</button>
       <button id="camera-start" type="button" class="btn btn-primary btn-lg btn-block" hidden>我准备好了，开始跟做 ${icon('spark',{size:20})}</button>
       <button id="camera-stop" type="button" class="btn btn-ghost btn-sm camera-stop" hidden>取消并关闭摄像头</button>
-      <p class="small muted camera-explainer">3 秒准备，跟做约 15 秒，完成后自动出分。测试中会显示镜像取景和同步示范。</p>
+      <p class="small muted camera-explainer">3 秒准备后，${pose?'按参考图摆好上半身，保持 5 秒':'跟着同步示范做最多 15 秒'}，完成后自动出分。</p>
     </section>`
 }
 
@@ -163,6 +176,7 @@ export const NaiwaView = {
       error: '',
       analyzing: false,
       inputMode: 'camera',
+      challengeId: 'laugh',
       cameraReady: false,
       cameraBusy: false,
       capturing: false,
@@ -175,6 +189,9 @@ export const NaiwaView = {
     let cameraSession = null
     let captureController = null
     let prepareVersion = 0
+    let poseEngine = null
+    let poseLoading = null
+    let userFileRequest = 0
 
     function stopCamera() {
       captureController?.abort()
@@ -187,8 +204,34 @@ export const NaiwaView = {
 
     const demoReady = () => Boolean(hasDefaultDemo || state.tempDemoFile)
     const userReady = () => Boolean(state.inputMode === 'camera' ? state.cameraSequence : state.userFile)
-    const demoSource = () => state.tempDemoFile || NAIWA.demo.video
+    const demoSource = () => state.challengeId==='custom' ? state.tempDemoFile : NAIWA.demo.video
 
+
+    function currentChallenge() {
+      const ref=NAIWA.references.find(item=>item.id===state.challengeId)
+      if(ref) return {...ref,kind:'pose',duration:5}
+      if(state.challengeId==='custom' && state.tempDemoFile) return {
+        id:'custom',kind:'video',name:'自选连续示范',src:state.tempDemoUrl,poster:'',
+        credit:state.tempDemoFile.name,steps:[{name:'跟着示范做',desc:'保持镜头稳定，完整跟做所选动作。'}],
+      }
+      return {id:'laugh',kind:'video',name:'捧腹大笑',src:NAIWA.demo.video,poster:NAIWA.demo.poster,steps:NAIWA.demo.steps,credit:NAIWA.demo.credit}
+    }
+    async function ensurePoseEngine(signal) {
+      if(!poseLoading) {
+        poseLoading=loadPoseEngine().then(engine=>{
+          if(!state.active){engine.close();throw new DOMException('已取消','AbortError')}
+          poseEngine=engine
+          return engine
+        }).catch(error=>{
+          poseLoading=null
+          if(error.name==='AbortError') throw error
+          throw new Error('姿势识别模型未能加载，请检查网络后重试，或切回捧腹大笑。')
+        })
+      }
+      const engine=await poseLoading
+      if(signal?.aborted) throw new DOMException('已取消','AbortError')
+      return engine
+    }
     function revokeUser() {
       if (state.userUrl) URL.revokeObjectURL(state.userUrl)
       state.userUrl = null
@@ -200,6 +243,7 @@ export const NaiwaView = {
 
     function paintPrepare() {
       const version = ++prepareVersion
+      const challenge = currentChallenge()
       stopCamera()
       state.loadingDemo = false
       state.cameraSequence = state.demoSequence = null
@@ -228,9 +272,9 @@ export const NaiwaView = {
                 <p class="panel-kicker">STEP 01</p>
                 <h2>先看一遍，等会儿跟着做</h2>
               </div>
-              <span class="chip chip-yellow">${hasDefaultDemo ? NAIWA.demo.durationLabel : '5 张参考图'}</span>
+              <span class="chip chip-yellow">${challenge.kind==='pose'?'保持 5 秒':NAIWA.demo.durationLabel}</span>
             </div>
-            ${demoPanelMarkup()}
+            ${demoPanelMarkup(challenge)}
             <div class="tips-block">
               <h3>${icon('video', { size: 18 })} 拍摄小贴士</h3>
               <ul>${NAIWA.recordTips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
@@ -246,7 +290,7 @@ export const NaiwaView = {
               <span class="chip">${icon('lock', { size: 14 })} 本地处理</span>
             </div>
 
-            ${cameraPanelMarkup()}
+            ${cameraPanelMarkup(challenge)}
             <section id="upload-mode" aria-label="选择已有视频" hidden>
             <label class="dropzone" id="dropzone" for="video-input">
               <input type="file" id="video-input" accept="video/*" hidden />
@@ -288,8 +332,8 @@ export const NaiwaView = {
         </div>
 
         <div class="quiz-footnote">
-          <p>${icon('spark', { size: 18 })} 本测评纯属娱乐：分数由本地动作比对算法生成，不是专业人体姿态识别，也不代表任何真实能力。</p>
-          <p>不方便开镜头？选择已有视频也能测。评分看整段运动轮廓和节奏，完成后统一计算。</p>
+          <p>${icon('spark', { size: 18 })} 本测评纯属娱乐：连续动作比对轮廓与节奏；姿势挑战比对上半身关键点，不提供专业动作指导。</p>
+          <p>不方便开镜头？选择已有视频也能测。姿势视频请保持至少 3 秒，建议 5 秒，完成后统一计算。</p>
         </div>
       </section>`
 
@@ -297,6 +341,22 @@ export const NaiwaView = {
     }
 
     function bindPrepare(version) {
+      const challenge = currentChallenge()
+      const isPose = challenge.kind === 'pose'
+      const chooseChallenge = id => {
+        if(id===state.challengeId) return
+        if(id!=='laugh' && !NAIWA.references.some(ref=>ref.id===id)) return
+        setNickname(main.querySelector('#nickname')?.value || getNickname())
+        revokeTemp()
+        state.tempDemoFile=state.tempDemoMeta=null
+        state.challengeId=id
+        state.error=''
+        paintPrepare()
+      }
+      for(const button of main.querySelectorAll('[data-challenge]')) {
+        button.addEventListener('click',()=>{chooseChallenge(button.dataset.challenge);main.querySelector('[data-challenge="'+button.dataset.challenge+'"]').focus({preventScroll:true})})
+      }
+      main.querySelector('#challenge-select').addEventListener('change',event=>{chooseChallenge(event.target.value);main.querySelector('#challenge-select').focus({preventScroll:true})})
       const isCurrent = () => state.active && prepareVersion === version && !state.analyzing
       const dropzone = main.querySelector('#dropzone')
       const videoInput = main.querySelector('#video-input')
@@ -330,11 +390,12 @@ export const NaiwaView = {
         cameraOpen.textContent = state.cameraBusy ? '等待摄像头授权…' : '打开摄像头，直接测'
         cameraStart.hidden = !state.cameraReady
         cameraStart.disabled = !state.cameraReady || state.capturing || state.loadingDemo
-        cameraStart.textContent = state.capturing ? '正在跟做…' : '我准备好了，开始跟做'
+        cameraStart.textContent = state.capturing ? (isPose?'正在保持姿势…':'正在跟做…') : (isPose?'我准备好了，开始摆姿势':'我准备好了，开始跟做')
         cameraStop.hidden = !state.cameraReady && !state.cameraBusy
         main.querySelector('#camera-placeholder').hidden = state.cameraReady
         main.querySelector('#camera-guide').hidden = !state.cameraReady || state.capturing
-        cameraReference.hidden = !state.cameraReady
+        cameraReference.hidden = !state.cameraReady || isPose
+        main.querySelector('#camera-pose-reference').hidden = !state.cameraReady || !isPose
         tempPick.disabled = state.capturing
         tempRemove.disabled = state.capturing
       }
@@ -380,7 +441,7 @@ export const NaiwaView = {
           if (!opened || !state.active || cameraSession !== session) return
           state.cameraBusy = false
           state.cameraReady = true
-          cameraStatus.textContent = '镜头已打开。放稳手机，退后一点，让头、双手和膝盖入镜；准备好再开始。'
+          cameraStatus.textContent = isPose ? '镜头已打开。让双肩、双手和髋部入镜，按右上角参考图摆好姿势，再开始。' : '镜头已打开。放稳手机，退后一点，让头、双手和膝盖入镜；准备好再开始。'
           for (const track of cameraVideo.srcObject.getVideoTracks()) {
             track.addEventListener('ended', () => {
               if (!state.active || cameraSession !== session) return
@@ -419,52 +480,59 @@ export const NaiwaView = {
         countdown.textContent = '准备中'
         cameraStatus.textContent = '正在准备参考动作，稍后开始倒计时…'
         try {
-          const reference = await sampleVideo(demoSource(), {
-            fps: LIMITS.sampleFps, maxDuration: LIMITS.maxDuration, signal,
-          })
-          if (signal.aborted) return
-          cameraReference.pause()
-          cameraReference.currentTime = 0
-          // 先确认示范可播放；播放失败/长时间加载时关闭镜头并保留重试入口。
-          let playTimer
-          const playable = cameraReference.play()
-          try {
-            await Promise.race([
-              playable,
-              new Promise((_,reject) => { playTimer = setTimeout(() => reject(new Error('示范加载超时，请检查网络后重试。')),8000) }),
-              delay(9000,signal),
-            ])
-          } finally { clearTimeout(playTimer) }
-          if (signal.aborted) return
-          cameraReference.pause()
-          cameraReference.currentTime = 0
+
+          let reference, engine
+          if(isPose) {
+            cameraStatus.textContent='首次使用正在加载本地姿势识别，请稍等；画面不会上传。'
+            engine=await ensurePoseEngine(signal)
+            reference={duration:5}
+          } else {
+            reference=await sampleVideo(demoSource(),{fps:LIMITS.sampleFps,maxDuration:LIMITS.maxDuration,signal})
+            if(signal.aborted) return
+            cameraReference.pause()
+            cameraReference.currentTime=0
+            let playTimer
+            try {
+              await Promise.race([
+                cameraReference.play(),
+                new Promise((_,reject)=>{playTimer=setTimeout(()=>reject(new Error('示范加载超时，请检查网络后重试。')),8000)}),
+                delay(9000,signal),
+              ])
+            } finally {clearTimeout(playTimer)}
+            if(signal.aborted) return
+            cameraReference.pause()
+            cameraReference.currentTime=0
+          }
+          if(signal.aborted) return
           for (const number of [3,2,1]) {
             countdown.textContent = String(number)
-            cameraStatus.textContent = '准备好，倒计时结束后跟右上角的奶蛙一起做。'
+            cameraStatus.textContent = isPose?'准备好，倒计时结束后保持右上角的姿势。':'准备好，倒计时结束后跟右上角的奶蛙一起做。'
             await delay(1000,signal)
           }
           countdown.hidden = true
           main.querySelector('.demo-video')?.pause()
-          await cameraReference.play()
+          if(!isPose) await cameraReference.play()
           if (signal.aborted) return
           captureProgress.hidden = false
           let shownSeconds = -1
           const sequence = await sampleLiveVideo(cameraVideo, {
-            duration: reference.duration, fps: LIMITS.sampleFps, signal,
-            referenceVideo: cameraReference,
-            onProgress: ({progress,elapsed,duration}) => {
+            duration: reference.duration, fps: isPose?6:LIMITS.sampleFps, signal,
+            referenceVideo: isPose?null:cameraReference,
+            frameReader: isPose?(video,t)=>engine.readFrame(video,t,true):null,
+            onProgress: ({progress,elapsed,duration,sample}) => {
               captureProgress.firstElementChild.style.width = Math.round(progress*100) + '%'
               captureProgress.setAttribute('aria-valuenow',String(Math.round(progress*100)))
               const seconds = Math.floor(elapsed)
               if (seconds !== shownSeconds) {
                 shownSeconds = seconds
-                cameraStatus.textContent = `正在跟做 ${seconds} / ${Math.ceil(duration)} 秒 · 放松捧腹，跟上奶蛙的节奏`
+                cameraStatus.textContent = isPose?`保持「${challenge.name}」 ${seconds} / 5 秒`:`正在跟做 ${seconds} / ${Math.ceil(duration)} 秒 · 跟上参考动作的节奏`
+                if(isPose) main.querySelector('#pose-feedback').textContent = sample?.pose?`当前姿势匹配 ${Math.round(scorePose(sample.pose,POSE_TARGETS[challenge.id]))}% · 尽量保持稳定`:'请让双肩、双手和髋部完整入镜。'
               }
             },
           })
           if (!state.active || signal.aborted) return
           state.cameraSequence = sequence
-          state.demoSequence = reference
+          state.demoSequence = isPose?null:reference
           const nickname = setNickname(nicknameInput?.value || getNickname())
           stopCamera()
           paintAnalyzing(nickname)
@@ -528,7 +596,8 @@ export const NaiwaView = {
 
       function paintTempDemo() {
         if (!tempInput) return
-        cameraReference.src = state.tempDemoUrl || NAIWA.demo.video
+        if(isPose) cameraReference.removeAttribute('src')
+        else cameraReference.src = challenge.src
         if (!state.tempDemoFile) {
           if (tempName) tempName.textContent = '使用内置捧腹大笑'
           if (tempRemove) tempRemove.hidden = true
@@ -543,6 +612,7 @@ export const NaiwaView = {
 
       async function acceptUserFile(file) {
         if (state.capturing) return
+        const request=++userFileRequest
         const err = fileError(file)
         if (err) {
           showError(err)
@@ -551,7 +621,7 @@ export const NaiwaView = {
         showError('')
         const url = URL.createObjectURL(file)
         const meta = await readVideoMeta(url)
-        if (!isCurrent()) {
+        if (!state.active || state.analyzing || request!==userFileRequest) {
           URL.revokeObjectURL(url)
           return
         }
@@ -569,6 +639,11 @@ export const NaiwaView = {
         state.userFile = file
         state.userUrl = url
         state.userMeta = meta
+        if(!isCurrent()) {
+          state.inputMode='upload'
+          paintPrepare()
+          return
+        }
         selectInputMode('upload')
         if (meta.duration && meta.duration > LIMITS.maxDuration) {
           showError(`视频有 ${formatSeconds(meta.duration)}，超过 ${LIMITS.maxDuration} 秒的部分不会参与比对。建议剪到 15 秒以内。`)
@@ -614,9 +689,8 @@ export const NaiwaView = {
         state.tempDemoFile = file
         state.tempDemoUrl = url
         state.tempDemoMeta = meta
-        cameraReference.src = url
-        paintTempDemo()
-        updateStart()
+        state.challengeId='custom'
+        paintPrepare()
         toast('临时示范已就位，可以开始测奶了', { type: 'ok' })
         sfx.pop()
       }
@@ -641,10 +715,8 @@ export const NaiwaView = {
         state.tempDemoFile = null
         state.tempDemoUrl = null
         state.tempDemoMeta = null
-        cameraReference.src = NAIWA.demo.video
-        if (tempVideo) tempVideo.removeAttribute('src')
-        paintTempDemo()
-        updateStart()
+        state.challengeId='laugh'
+        paintPrepare()
       })
 
       main.querySelector('#change-video')?.addEventListener('click', () => videoInput?.click())
@@ -765,16 +837,26 @@ export const NaiwaView = {
       })
 
       const referenceSource = demoSource()
+      const challenge = currentChallenge()
       ;(async () => {
         try {
-          const result = await analyzeVideos({
-            demoSource: referenceSource,
-            userSource: state.userFile,
-            demoSequence: state.demoSequence,
-            userSequence: state.cameraSequence,
-            signal: controller.signal,
-            onProgress,
-          })
+
+          let result
+          if(challenge.kind==='pose') {
+            const engine=state.cameraSequence?null:await ensurePoseEngine(controller.signal)
+            result=await analyzePoseChallenge({
+              reference:challenge,userSource:state.userFile,userSequence:state.cameraSequence,
+              engine,signal:controller.signal,onProgress,
+            })
+          } else {
+            result=await analyzeVideos({
+              demoSource:referenceSource,userSource:state.userFile,
+              demoSequence:state.demoSequence,userSequence:state.cameraSequence,
+              signal:controller.signal,onProgress,
+            })
+          }
+          result.challengeId=challenge.id
+          result.challengeName=challenge.name
           if (!state.active || controller.signal.aborted) return
           clearInterval(tipTimer)
           const finalNickname = setNickname(nickname || getNickname())
@@ -821,6 +903,8 @@ export const NaiwaView = {
 
     return () => {
       state.active = false
+      poseEngine?.close()
+      poseEngine = null
       stopCamera()
       state.cameraSequence = state.demoSequence = null
       document.removeEventListener('visibilitychange',onVisibility)

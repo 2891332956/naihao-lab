@@ -58,10 +58,10 @@ export function cameraErrorMessage(error) {
 }
 
 /** 等间隔采集真实相机帧；掉到后台或长时间卡顿时拒绝不完整结果。 */
-export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrames = 96, referenceVideo, signal, onProgress } = {}) {
+export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrames = 96, referenceVideo, frameReader, signal, onProgress } = {}) {
   if (signal?.aborted) throw abortError()
   if (!Number.isFinite(duration) || duration < .4 || duration > 30) throw new Error('跟做时长无效，请重新开始。')
-  const readFrame = createFrameReader(video)
+  const readFrame = frameReader ? t => frameReader(video,t) : createFrameReader(video)
   const expected = Math.max(2, Math.min(maxFrames, Math.floor(duration * fps) + 1))
   const margin = Math.min(.05, duration / 10)
   const span = duration - margin * 2
@@ -111,7 +111,7 @@ export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrame
           lastFreshAt = elapsed
         }
         if (elapsed - lastFreshAt > 1.5) throw new Error('摄像头画面停住了，请检查镜头后重试。')
-        onProgress?.({ progress: Math.min(1, elapsed / duration), elapsed, duration, frames: frames.length })
+        onProgress?.({ progress: Math.min(1, elapsed / duration), elapsed, duration, frames: frames.length, sample: frames[frames.length-1] })
         if (elapsed >= duration) {
           if (frames.length < Math.max(2, expected * .7)) throw new Error('有效画面太少，请保持页面在前台后重试。')
           settled = true

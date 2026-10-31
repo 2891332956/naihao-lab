@@ -57,7 +57,7 @@ export const AboutView = {
         <div class="section-head">
           <p class="eyebrow">HOW IT SCORES</p>
           <h2 class="section-title">分数是怎么算出来的</h2>
-          <p class="section-sub">没有 AI 大模型，也不上传视频；就是一套老实巴交的动作结构比对。</p>
+          <p class="section-sub">连续动作比轮廓与节奏，姿势挑战在本机识别上半身关键点；画面都不会上传。</p>
         </div>
         <div class="facts-grid">
           ${ALGO_FACTS.map(
@@ -79,8 +79,8 @@ export const AboutView = {
             <li>加权（动作 55% / 节奏 20% / 能量 15% / 完成度 10%）后平滑映射到 0–100 分，再按分档线给称号。</li>
           </ol>
           <p class="muted small">
-            这是轻量动作结构比对方案，<strong>不是专业人体姿态识别</strong>；镜头角度、背景复杂度、遮挡都会影响结果。
-            后续可以替换成姿态关键点模型，分数会更准。
+            连续动作使用运动结构比对；静态姿势使用本机人体关键点，与所选姿势模板匹配。<strong>两种模式都仅供娱乐</strong>，镜头角度、光线和遮挡会影响结果。
+            姿势模式主要评价上半身手臂与手腕位置，表情和下肢暂不计分。
           </p>
         </div>
       </section>
@@ -99,7 +99,7 @@ export const AboutView = {
           <div class="privacy-card">
             <span aria-hidden="true">🫥</span>
             <h3>不认脸，只认动作</h3>
-            <p>比对过程只使用灰度化和前景轮廓，不提取人脸特征，不保存任何截图或视频帧。</p>
+            <p>比对过程只使用灰度化和前景轮廓，不做人脸身份识别，不保存任何截图或视频帧。</p>
           </div>
           <div class="privacy-card">
             <span aria-hidden="true">💾</span>

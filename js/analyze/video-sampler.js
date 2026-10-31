@@ -140,7 +140,7 @@ function seekVideo(video, time) {
  * @returns {Promise<{frames:Array, duration:number, width:number, height:number}>}
  */
 export async function sampleVideo(source, options = {}) {
-  const { fps = 12, maxFrames = 96, maxDuration = 15, signal, onProgress } = options
+  const { fps = 12, maxFrames = 96, maxDuration = 15, frameReader, signal, onProgress } = options
   if (!source) throw new Error('没有找到视频')
 
   const objectUrl = typeof source === 'string' ? null : URL.createObjectURL(source)
@@ -169,7 +169,7 @@ export async function sampleVideo(source, options = {}) {
     const margin = Math.min(0.05, duration / 10)
     const span = Math.max(0.01, duration - margin * 2)
     const frames = []
-    const readFrame = createFrameReader(video)
+    const readFrame = frameReader ? t => frameReader(video,t) : createFrameReader(video)
 
     for (let i = 0; i < frameCount; i++) {
       if (signal?.aborted) throw new DOMException('已取消', 'AbortError')

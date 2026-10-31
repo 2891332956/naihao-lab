@@ -75,6 +75,9 @@ export function addResult(result) {
     frames: result.frames || null,
     duration: result.duration || null,
     analyzerVersion: result.analyzerVersion || null,
+    analysisMode: result.analysisMode || 'motion',
+    challengeId: result.challengeId || null,
+    challengeName: result.challengeName || null,
   }
   const list = getResults().filter((r) => r.id !== entry.id)
   list.unshift(entry)

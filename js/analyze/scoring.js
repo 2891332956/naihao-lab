@@ -64,9 +64,17 @@ export async function analyzeVideos({ demoSource, userSource, demoSequence, user
   await new Promise((r) => requestAnimationFrame(r))
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
 
+  const result = createAnalysisResult(raw,demo,user)
+  onProgress?.({ phase: 'done', ratio: 1, detail: '鉴定完成' })
+  return result
+}
+
+
+/** 连续动作与静态姿势共用称号、精度和保存格式。 */
+export function createAnalysisResult(raw,demo,user,extra={}) {
   const score = clamp(Number(raw.score) || 0, 0, 100)
   const rank = rankForScore(score)
-  const result = {
+  return {
     id: newId(),
     module: 'naiwa',
     score: Math.round(score * 10) / 10,
@@ -81,9 +89,8 @@ export async function analyzeVideos({ demoSource, userSource, demoSequence, user
       user: Math.round(user.duration * 100) / 100,
     },
     createdAt: new Date().toISOString(),
+    ...extra,
   }
-  onProgress?.({ phase: 'done', ratio: 1, detail: '鉴定完成' })
-  return result
 }
 
 /** 构造一条演示用结果（调试 / 截图 / 未接入素材时的预览） */

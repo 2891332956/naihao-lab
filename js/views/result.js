@@ -1,5 +1,5 @@
 /** 结果页：奶家人值 / 称号揭晓 / 四维成分 / 称号卡下载 */
-import { RANKS, METRIC_META, rankForScore, nextRankFor } from '../config.js'
+import { RANKS, metricMetaFor, rankForScore, nextRankFor } from '../config.js'
 import { naiwaArtwork } from '../ui/mascot.js'
 import {
   icon,
@@ -16,11 +16,11 @@ import { downloadShareCard } from '../ui/share-card.js'
 import { burstConfetti } from '../ui/confetti.js'
 import { sfx } from '../ui/sfx.js'
 
-function buildTags(metrics, score) {
+function buildTags(metrics, score, pose = false) {
   const tags = []
   if ((metrics.action ?? score) >= 72) tags.push('动作纯正')
-  if ((metrics.rhythm ?? score) >= 72) tags.push('节奏踩点')
-  if ((metrics.energy ?? score) >= 72) tags.push('奶量爆发')
+  if ((metrics.rhythm ?? score) >= 72) tags.push(pose ? '姿势稳定' : '节奏踩点')
+  if ((metrics.energy ?? score) >= 72) tags.push(pose ? '清晰入镜' : '奶量爆发')
   if ((metrics.completion ?? score) >= 72) tags.push('整活完整')
   if ((metrics.action ?? score) < 55) tags.push('动作自由发挥')
   if ((metrics.energy ?? score) < 55) tags.push('奶量含蓄')
@@ -73,7 +73,7 @@ export const ResultView = {
     const nextRank = nextRankFor(rank.id)
     const score = clamp(Number(result.score) || 0, 0, 100)
     const metrics = result.metrics || {}
-    const tags = buildTags(metrics, score)
+    const tags = buildTags(metrics, score, result.analysisMode==='pose')
     const beat = clamp(Math.round(score * 0.92 + 6), 1, 99)
     const diff = nextRank ? Math.max(0, nextRank.min - score) : 0
     const rankIndex = getLeaderboard().findIndex((item) => item.id === result.id)
@@ -94,6 +94,7 @@ export const ResultView = {
         <div class="result-hero-pattern" aria-hidden="true"></div>
         <div class="result-score-block">
           <p class="result-label">你的奶家人值</p>
+          ${result.challengeName?`<p class="result-challenge">${esc(result.analysisMode==='pose'?'姿势挑战':'连续动作')} · ${esc(result.challengeName)}</p>`:''}
           <div class="result-score"><span id="score-num">${reduced ? fmtScore(score) : '0.0'}</span><em>分</em></div>
           <p class="result-beat">${rank.min}–${rank.max ?? 100} 分段 · 击败了 <strong>${beat}%</strong> 的奶家人（娱乐算法）</p>
           <div class="result-tag-row">
@@ -141,7 +142,7 @@ export const ResultView = {
             <span class="chip">${icon('lock', { size: 14 })} 本地比对</span>
           </div>
           <ul class="metric-list">
-            ${Object.values(METRIC_META)
+            ${Object.values(metricMetaFor(result))
               .map((meta) => {
                 const value = clamp(Number(metrics[meta.key]) || 0, 0, 100)
                 return `
@@ -183,7 +184,7 @@ export const ResultView = {
 
       <div class="result-extra">
         <p>
-          ${icon('video', { size: 16 })} 本次比对：示范 ${frames.demo} 帧 × 你的 ${frames.user} 帧
+          ${icon('video', { size: 16 })} ${result.analysisMode==='pose'?`本轮姿势：${esc(result.challengeName)} · ${frames.user} 个采样画面`:`本次比对：示范 ${frames.demo} 帧 × 你的 ${frames.user} 帧`}
           ${confidence !== null ? `· 算法置信度 ${confidence}%` : ''}
           ${rankIndex >= 0 ? `· 本机排名第 ${rankIndex + 1} 名` : ''}
           ${isPreview ? '· 预览数据' : ''}

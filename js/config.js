@@ -169,7 +169,7 @@ export const NAIWA = {
   title: '奶蛙 · 奶量鉴定',
   metric: '奶家人值',
   short: '奶量',
-  intro: '不用另录视频再上传。打开摄像头，跟着奶蛙捧腹大笑 15 秒，领走你的奶家称号。不方便开镜头，也可以选择已有视频。',
+  intro: '先选挑战，再打开镜头：捧腹大笑跟做 15 秒，也可以选择下方任意姿势保持 5 秒。不方便开镜头，也能选择已有视频。',
   identity: '黄色梨形身体、浅色圆肚子、绿色眼圈、深色手脚。奶蛙是网友二创的抽象生物，认准这只黄乎乎的奶家人。',
   references: [
     { id: 'belly', name: '捧腹预备', desc: '双手放在肚子前，肩膀放松，拿捏那一点呆呆的奶味。', src: './material/clean/naiwa-belly.webp', alt: '黄色梨形奶蛙，绿色眼圈，双手捧着浅色大肚子' },
@@ -293,6 +293,15 @@ export const METRIC_META = {
   },
 }
 
+/** 静态姿势不使用节奏/爆发指标，结果与分享保持相同含义。 */
+export const POSE_METRIC_META = {
+  action: { ...METRIC_META.action, label:'姿势匹配', short:'姿势', desc:'手臂、手腕相对身体的位置与所选参考有多接近' },
+  rhythm: { ...METRIC_META.rhythm, label:'保持稳定', short:'稳定', desc:'保持姿势时，手臂与手腕是否稳定' },
+  energy: { ...METRIC_META.energy, label:'入镜清晰', short:'清晰', desc:'上半身关键点的可见程度与有效画面比例' },
+  completion: { ...METRIC_META.completion, label:'保持完成度', desc:'保持时间中，姿势达到匹配要求的比例' },
+}
+export const metricMetaFor = result => result?.analysisMode==='pose' ? POSE_METRIC_META : METRIC_META
+
 /** 首页排行榜预览 / 榜单种子数据（仅用于演示氛围，可自行替换） */
 export const LEADERBOARD_SEED = [
   { id: 'seed-1', name: '奶蛙本蛙', score: 98.6, date: '2026-10-27' },
@@ -321,7 +330,7 @@ export const FAQ = [
   },
   {
     q: '会边做边判断姿势是否正确吗？',
-    a: '测试中会显示你的取景、同步示范和进度。整段结束后，按运动轮廓和节奏统一给分；目前不提供关节级姿势纠正，结果仅供娱乐。',
+    a: '连续动作模式显示取景、同步示范和进度，结束后比较运动轮廓与节奏。姿势挑战会在本机识别上半身关键点，提示与所选姿势的匹配程度，保持结束后综合给分；不提供专业动作指导。',
   },
   {
     q: '分数是怎么算出来的？',
