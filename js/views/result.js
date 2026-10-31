@@ -20,10 +20,8 @@ function buildTags(metrics, score, pose = false) {
   const tags = []
   if ((metrics.action ?? score) >= 72) tags.push('动作纯正')
   if ((metrics.rhythm ?? score) >= 72) tags.push(pose ? '姿势稳定' : '节奏踩点')
-  if ((metrics.energy ?? score) >= 72) tags.push(pose ? '清晰入镜' : '奶量爆发')
   if ((metrics.completion ?? score) >= 72) tags.push('整活完整')
   if ((metrics.action ?? score) < 55) tags.push('动作自由发挥')
-  if ((metrics.energy ?? score) < 55) tags.push('奶量含蓄')
   if ((metrics.completion ?? score) < 55) tags.push('收尾随缘')
   if (!tags.length) tags.push('快乐参与')
   return tags.slice(0, 3)
@@ -157,6 +155,8 @@ export const ResultView = {
               })
               .join('')}
           </ul>
+          <p class="small muted">${/^(?:pose-)?2\./.test(result.analyzerVersion||'')?`本次评分：动作相似度 90% + ${result.analysisMode==='pose'?'保持稳定':'节奏同步'} 5% + 完成度 5%。长相、服装和身材不计分。`:'旧版记录，保留原有分数；再次测试将采用动作占 90% 的新规则。'}</p>
+          ${result.assessment?`<p class="small muted">本次评估：${esc(result.assessment.observed.join('、'))||'暂无'}。${result.assessment.missing.length?`未评估：${esc(result.assessment.missing.join('、'))}。`:''}识别覆盖仅说明评估范围，不计入分数。</p>`:''}
         </section>
       </div>
 

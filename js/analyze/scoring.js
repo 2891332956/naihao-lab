@@ -83,6 +83,7 @@ export function createAnalysisResult(raw,demo,user,extra={}) {
     rankId: rank.id,
     debug: raw.debug,
     analyzerVersion: raw.version || null,
+    ...(raw.assessment?{assessment:raw.assessment}:{}),
     frames: { demo: demo.frames.length, user: user.frames.length },
     duration: {
       demo: Math.round(demo.duration * 100) / 100,

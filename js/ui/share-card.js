@@ -227,6 +227,13 @@ export async function renderShareCard(result, opts = {}) {
     drawMetricBar(ctx, x, y, (panelW - 72) / 2 - 12, label, value, color)
   })
 
+  ctx.textAlign='center'
+  ctx.fillStyle='rgba(29,42,32,.7)'
+  ctx.font=font(600,18)
+  const partial=result.assessment?.missing?.length?` · 未评估：${result.assessment.missing.join('、')}`:''
+  const actionFirst=/^(?:pose-)?2\./.test(result.analyzerVersion||'')
+  ctx.fillText(actionFirst?`动作 90% · ${result.analysisMode==='pose'?'稳定':'节奏'} 5% · 完成 5% · 外观不计分${partial}`:'旧版成绩 · 保留原有评分',W/2,1146,W-160)
+
   // 底部信息条
   roundRect(ctx, 80, 1166, W - 160, 96, 22)
   ctx.fillStyle = INK

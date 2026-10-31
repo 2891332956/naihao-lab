@@ -11,14 +11,13 @@
  *   2) 每帧特征：
  *      a. 时间维分位数（默认中位数）估计静态背景；
  *      b. 背景差分 + 帧间运动补强 → 前景 mask（阈值按噪声稳健自适应）；
- *      c. mask 的紧致 bbox 居中、缩放为约 24×32 的「轮廓描述子」；
- *      d. bbox 归一化的 8×8「运动能量图」；
- *      e. 前景质心位移得到的「运动方向」描述子（只取方向，幅度交给 energy 指标）；
+ *      c. 在同一视频中估计局部块位移，仅把运动方向作为跨视频比较特征；
+ *      d. 前景质心的方向与归一化轨迹补充整体运动；
  *   3) 序列比对：DTW（Sakoe-Chiba 归一化时间带宽，默认 20%）对齐两条序列，
- *      沿最优路径统计轮廓 / 运动图 / 运动方向的平均相似度；
+ *      沿最优路径比较局部运动方向与整体轨迹，不比较轮廓或颜色；
  *      另算运动能量包络的节奏相关性、平均运动强度比、有效动作覆盖率（完成度）；
  *   4) 水平镜像容忍：默认同时比对「正常」与「水平镜像」两个版本，取较优者；
- *   5) 指标映射 + sigmoid/幂次校准 + 质量门控 → 最终分数与置信度。
+ *   5) 动作 90% + 节奏 5% + 完成度 5%；强度和识别可信度不计分。
  *
  * ── 边界与局限（重要，请勿误解）────────────────────────────────────────────
  * 本算法是「动作 / 运动结构比对」，不是专业人体姿态识别：
@@ -56,7 +55,7 @@
  */
 
 /** 算法核心版本号（区别于网站版本，便于 Lead 对接与后续替换） */
-export const ANALYZER_VERSION = '0.1.0';
+export const ANALYZER_VERSION = '2.0.0';
 
 /** 数值容差 */
 const EPS = 1e-9;
@@ -95,13 +94,13 @@ const MAX_SOURCE_DIM = 4096;
  * - maxScore：分数上限（避免“完全一样”直接 100，默认 99.5）
  */
 export const DEFAULT_OPTIONS = {
-  weights: { action: 0.55, rhythm: 0.2, energy: 0.15, completion: 0.1 },
-  actionWeights: { shape: 0.3, motion: 0.2, velocity: 0.25, trajectory: 0.25 },
+  weights: { action: 0.9, rhythm: 0.05, energy: 0, completion: 0.05 },
+  actionWeights: { shape: 0, motion: 0, flow: 0.7, velocity: 0.15, trajectory: 0.15 },
   actionCenter: 0.62,
   actionSteepness: 8,
   actionQuantileWeight: 0.3,
   trajectoryTimingWeight: 0.4,
-  scoreGamma: 1.6,
+  scoreGamma: 1,
   maxScore: 99.5,
 
   targetSize: 64,
@@ -226,8 +225,7 @@ function resolveOptions(options) {
       'completion',
     ]),
     actionWeights: normalizeWeights(src.actionWeights, DEFAULT_OPTIONS.actionWeights, [
-      'shape',
-      'motion',
+      'flow',
       'velocity',
       'trajectory',
     ]),
@@ -646,6 +644,34 @@ function emptyFeatures(targetSize, sourceCount, capped, sourceSize) {
  * @param {typeof DEFAULT_OPTIONS} opts 已校验参数
  * @returns {SequenceFeatures}
  */
+/** 同一视频内用局部块匹配估计光流；跨视频仅比较方向，不比较外形或像素。 */
+function localFlowDirections(previous,current,size){
+  const s=32,a=new Float32Array(s*s),b=new Float32Array(s*s),hist=new Float32Array(8);
+  for(let y=0;y<s;y++)for(let x=0;x<s;x++){
+    const i=y*s+x,p=Math.min(size-1,Math.floor(y*size/s))*size+Math.min(size-1,Math.floor(x*size/s));
+    a[i]=previous[p];b[i]=current[p];
+  }
+  for(let y=5;y<s-5;y+=3)for(let x=5;x<s-5;x+=3){
+    let lo=255,hi=0,baseline=0;
+    for(let py=-2;py<=2;py++)for(let px=-2;px<=2;px++){
+      const p=(y+py)*s+x+px,value=a[p];lo=Math.min(lo,value);hi=Math.max(hi,value);baseline+=(value-b[p])**2;
+    }
+    if(hi-lo<12 || baseline<50)continue;
+    let best=baseline,u=0,v=0;
+    for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){
+      let error=.02*(dx*dx+dy*dy);
+      for(let py=-2;py<=2;py++)for(let px=-2;px<=2;px++)error+=(a[(y+py)*s+x+px]-b[(y+py+dy)*s+x+px+dx])**2;
+      if(error<best){best=error;u=dx;v=dy}
+    }
+    if((u===0&&v===0)||best>baseline*.75)continue;
+    const bin=((Math.atan2(v,u)/(Math.PI*2)+1)%1)*8,k=Math.floor(bin),f=bin-k,weight=1;
+    hist[k]+=weight*(1-f);hist[(k+1)%8]+=weight*f;
+  }
+  let total=0;for(const v of hist)total+=v;
+  if(total>0)for(let k=0;k<8;k++)hist[k]/=total;
+  return hist;
+}
+
 function buildSequenceFeatures(inputFrames, opts) {
   const size = opts.targetSize;
   const pixels = size * size;
@@ -960,6 +986,8 @@ function buildSequenceFeatures(inputFrames, opts) {
     lenScore * (0.1 + 0.45 * motionScore + 0.2 * contrastScore + 0.25 * fgScore),
   );
 
+  const flowStep=Math.max(1,Math.round(n/48))
+  const flow=smoothed.map((frame,t)=>localFlowDirections(smoothed[Math.max(0,t-flowStep)],smoothed[Math.min(n-1,t+flowStep)]||frame,size))
   return {
     n,
     sourceCount,
@@ -970,6 +998,7 @@ function buildSequenceFeatures(inputFrames, opts) {
     contourNorm,
     motionGrid,
     motionNorm,
+    flow,
     speed,
     velocityDir,
     trajPos,
@@ -1045,6 +1074,7 @@ function mirrorFeatures(f, opts) {
   }
   return {
     ...f,
+    flow:f.flow.map(hist=>Float32Array.from(hist,(_,k)=>hist[(4-k+8)%8])),
     contour,
     motionGrid,
     velocityDir,
@@ -1073,37 +1103,8 @@ function mirrorFeatures(f, opts) {
 function pairSimilarity(fa, fb, i, j, opts, out) {
   const aw = opts.actionWeights;
 
-  // 轮廓
-  const cA = fa.contour[i];
-  const cB = fb.contour[j];
-  const nA = fa.contourNorm[i];
-  const nB = fb.contourNorm[j];
-  let shape;
-  if (nA < 1e-6 && nB < 1e-6) {
-    shape = 1;
-  } else if (nA < 1e-6 || nB < 1e-6) {
-    shape = 0;
-  } else {
-    let dot = 0;
-    for (let k = 0; k < cA.length; k++) dot += cA[k] * cB[k];
-    shape = clamp01(dot);
-  }
-
-  // 运动图
-  const mA = fa.motionGrid[i];
-  const mB = fb.motionGrid[j];
-  const nmA = fa.motionNorm[i];
-  const nmB = fb.motionNorm[j];
-  let motion;
-  if (nmA < 1e-6 && nmB < 1e-6) {
-    motion = 1;
-  } else if (nmA < 1e-6 || nmB < 1e-6) {
-    motion = 0;
-  } else {
-    let dot = 0;
-    for (let k = 0; k < mA.length; k++) dot += mA[k] * mB[k];
-    motion = clamp01(dot);
-  }
+  // 兼容旧调试字段，明确不比较外形和空间像素分布。
+  const shape=0,motion=0;
 
   // 运动方向
   let velocity;
@@ -1142,10 +1143,16 @@ function pairSimilarity(fa, fb, i, j, opts, out) {
     out.velocity = velocity;
     out.trajectory = trajectory;
   }
+  let flow=0,dot=0,normA=0,normB=0;
+  for(let k=0;k<8;k++){
+    // 邻近方向做轻微平滑，容忍像素量化与身体大小造成的光流方向误差。
+    const a=fa.flow[i][k]*.5+(fa.flow[i][(k+7)%8]+fa.flow[i][(k+1)%8])*.25;
+    const b=fb.flow[j][k]*.5+(fb.flow[j][(k+7)%8]+fb.flow[j][(k+1)%8])*.25;
+    dot+=a*b;normA+=a*a;normB+=b*b;
+  }
+  flow=normA>1e-6&&normB>1e-6?dot/Math.sqrt(normA*normB):normA<1e-6&&normB<1e-6?1:0;
   return clamp01(
-    aw.shape * shape +
-      aw.motion * motion +
-      aw.velocity * velocity +
+    aw.flow * flow + aw.velocity * velocity +
       aw.trajectory * trajectory,
   );
 }
@@ -1647,20 +1654,6 @@ function mapActionMetric(sim, opts) {
 }
 
 /**
- * 序列质量 → 分数门控系数（0.15..1）。
- * 质量很差（太短/几乎无运动/几乎无对比度/前景检不出）时把总分压低，
- * 避免“两张全黑图完全相同”被算成高分。
- * @param {number} usability 0..1
- * @returns {number}
- */
-function qualityGate(usability) {
-  if (usability >= 0.75) return 1;
-  const t = clamp01((usability - 0.2) / 0.55);
-  const s = t * t * (3 - 2 * t); // smoothstep
-  return 0.15 + 0.85 * s;
-}
-
-/**
  * 构造退化结果（空输入等）。
  * @param {SequenceFeatures} fa
  * @param {SequenceFeatures} fb
@@ -1726,6 +1719,14 @@ function degenerateResult(fa, fb) {
  * @param {Record<string, unknown>} [options] 覆盖 DEFAULT_OPTIONS 中的任意字段
  * @returns {{version:string, score:number, metrics:{action:number,rhythm:number,energy:number,completion:number}, confidence:number, debug:object}}
  */
+// 汇总局部运动方向，防止 DTW 把两段动作的停顿对齐后掩盖相反的抬手方向。
+function flowDirectionFactor(a,b){
+  const sum=f=>{const out=new Float64Array(8);for(const h of f.flow)for(let k=0;k<8;k++)out[k]+=h[k];return out};
+  const x=sum(a),y=sum(b);let dot=0,xx=0,yy=0;
+  for(let k=0;k<8;k++){dot+=x[k]*y[k];xx+=x[k]*x[k];yy+=y[k]*y[k]}
+  return xx>1e-6&&yy>1e-6?.4+.6*clamp01(dot/Math.sqrt(xx*yy)):1;
+}
+
 export function analyzeSequences(demoFrames, userFrames, options = {}) {
   const opts = resolveOptions(options);
   const demo = buildSequenceFeatures(demoFrames, opts);
@@ -1746,7 +1747,7 @@ export function analyzeSequences(demoFrames, userFrames, options = {}) {
   if (normal) {
     const normalTimingSim = computeTrajectoryTimingSimilarity(demo, user);
     normalActionSim = clamp01(
-      normal.actionSim * trajectoryTimingFactor(normalTimingSim, opts),
+      normal.actionSim * trajectoryTimingFactor(normalTimingSim, opts) * flowDirectionFactor(demo,user),
     );
     bestActionSim = normalActionSim;
     bestTimingSim = normalTimingSim;
@@ -1757,7 +1758,7 @@ export function analyzeSequences(demoFrames, userFrames, options = {}) {
     if (mirror) {
       const mirrorTimingSim = computeTrajectoryTimingSimilarity(demo, mirroredFeatures);
       mirroredActionSim = clamp01(
-        mirror.actionSim * trajectoryTimingFactor(mirrorTimingSim, opts),
+        mirror.actionSim * trajectoryTimingFactor(mirrorTimingSim, opts) * flowDirectionFactor(demo,mirroredFeatures),
       );
       if (!best || mirroredActionSim > bestActionSim) {
         best = mirror;
@@ -1793,11 +1794,14 @@ export function analyzeSequences(demoFrames, userFrames, options = {}) {
   );
   const calibrated = 100 * Math.pow(weighted01, opts.scoreGamma);
   const minQuality = Math.min(demo.quality.usability, user.quality.usability);
-  const gate = qualityGate(minQuality);
+  // 清晰度仅报告可信度，不因衣服对比、外形面积压分；没有运动证据时不出高分。
+  const evidence=f=>f.flow.some(h=>h.some(v=>v>0)) || f.speed.some(v=>v>=opts.velocityFloor);
+  const gate = demo.n<3 || user.n<3 || Math.min(demo.envMean,user.envMean)<opts.motionNoiseFloor || !evidence(demo)||!evidence(user) ? 0 : 1;
   const score = roundTo(clamp(calibrated * gate, 0, opts.maxScore), 1);
   const confidence = roundTo(clamp01(0.05 + 0.9 * minQuality), 3);
 
   const debug = {
+    appearanceWeight:0,
     version: ANALYZER_VERSION,
     demoFrames: demo.n,
     userFrames: user.n,

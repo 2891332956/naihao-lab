@@ -124,7 +124,7 @@ export async function sampleLiveVideo(video, { duration = 15, fps = 12, maxFrame
           resolve({ frames, duration, wallDuration:elapsed, width: 64, height: 64 })
           return
         }
-        if(acceptFrame && elapsed>=maxWaitDuration) throw new Error('还没持续看清双肩和双手，请调整入镜位置后再试一次。')
+        if(acceptFrame && elapsed>=maxWaitDuration) throw new Error('可评估的动作画面不足，请让做动作的一侧手臂尽量入镜后重试；不用同时露出双手双肩。')
         raf = requestAnimationFrame(tick)
       } catch (error) { fail(error) }
     }

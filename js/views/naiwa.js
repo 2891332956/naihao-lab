@@ -7,7 +7,7 @@ import { analyzeVideos } from '../analyze/scoring.js'
 import { sampleVideo } from '../analyze/video-sampler.js'
 import { createCameraSession, sampleLiveVideo, cameraErrorMessage } from '../analyze/camera.js'
 import { loadPoseEngine, analyzePoseChallenge } from '../analyze/pose-runtime.js'
-import { POSE_TARGETS, scorePose } from '../analyze/pose-core.js'
+import { POSE_TARGETS, assessPose } from '../analyze/pose-core.js'
 import { sfx } from '../ui/sfx.js'
 
 const LIMITS = NAIWA.limits
@@ -81,7 +81,7 @@ function stepperMarkup({ demoOk, userOk }) {
 function demoPanelMarkup(challenge) {
   const pose=challenge.kind==='pose'
   const steps=pose
-    ? [{name:challenge.name,desc:challenge.desc},{name:'上半身入镜',desc:'请让双肩和双手留在画面中，坐着也可以。'},{name:'保持 5 秒',desc:'上半身按手臂与手腕位置匹配，表情和下肢暂不计分。'}]
+    ? [{name:challenge.name,desc:challenge.desc},{name:'自然摆姿势',desc:'做动作的手臂尽量入镜，另一只手可以自然遮挡，不要求双手双肩同时露出。'},{name:'保持 5 秒',desc:'动作相似度占 90%，比较手臂方向与弯曲；长相、衣服和身材不计分。'}]
     : challenge.steps
   return `
     <div class="demo-stage ${pose?'pose-demo-stage':''}">
@@ -136,7 +136,7 @@ function cameraPanelMarkup(challenge) {
       <div class="camera-stage">
         <video id="camera-video" class="camera-video" muted autoplay playsinline aria-label="你的镜像取景画面"></video>
         <div class="camera-placeholder" id="camera-placeholder">${icon('video',{size:40})}<strong>镜头前，直接测。</strong><span>本轮：${esc(challenge.name)} · ${pose?'保持 5 秒':'跟做最多 15 秒'}</span></div>
-        <div class="camera-guide" id="camera-guide" hidden><span>${pose?'双肩和双手入镜，坐着也可以':'让头、双手和膝盖留在画面内'}</span></div>
+        <div class="camera-guide" id="camera-guide" hidden><span>${pose?'自然摆姿势 · 不要求双手双肩同时露出':'放稳镜头，让动作尽量留在画面内'}</span></div>
         <video id="camera-reference" class="camera-reference" muted playsinline preload="metadata" src="${esc(pose?NAIWA.demo.video:challenge.src)}" poster="${esc(NAIWA.demo.poster||'')}" aria-label="跟做示范" hidden></video>
         <img id="camera-pose-reference" class="camera-reference" src="${esc(pose?challenge.src:NAIWA.references[0].src)}" alt="${pose?esc(challenge.name):'姿势参考'}" hidden>
         <p id="pose-feedback" class="pose-feedback" role="status" aria-live="polite" hidden>先检查上半身是否入镜，再开始计时。</p>
@@ -149,7 +149,7 @@ function cameraPanelMarkup(challenge) {
       <button id="camera-start" type="button" class="btn btn-primary btn-lg btn-block" hidden>我准备好了，开始跟做 ${icon('spark',{size:20})}</button>
       <button id="camera-stop" type="button" class="btn btn-ghost btn-sm camera-stop" hidden>取消并关闭摄像头</button>
       </div>
-      <p class="small muted camera-explainer">3 秒准备后，${pose?'按参考图摆好上半身，保持 5 秒':'跟着同步示范做最多 15 秒'}，完成后自动出分。</p>
+      <p class="small muted camera-explainer">3 秒准备后，${pose?'按参考图摆好上半身，保持 5 秒':'跟着同步示范做最多 15 秒'}，完成后自动出分。动作相似度占 90%，外观不计分。</p>
     </section>
     <dialog id="camera-dialog" class="camera-dialog" aria-labelledby="camera-dialog-title">
       <header class="camera-dialog-head"><div><strong id="camera-dialog-title">${esc(challenge.name)}</strong><span>${pose?'上半身挑战 · 累计保持 5 秒':'连续动作 · 跟做最多 15 秒'} · 画面仅在本机处理</span></div><button id="camera-dialog-close" class="btn btn-ghost btn-sm" type="button">关闭取景</button></header>
@@ -415,7 +415,7 @@ export const NaiwaView = {
         cameraOpen.textContent = state.cameraBusy ? '等待摄像头授权…' : '打开摄像头，直接测'
         cameraStart.hidden = !state.cameraReady
         cameraStart.disabled = !state.cameraReady || state.capturing || state.loadingDemo || (isPose && !state.poseReady && !state.poseFailed)
-        cameraStart.textContent = state.capturing ? (isPose?'正在保持姿势…':'正在跟做…') : (isPose?(state.poseFailed?'重试姿势识别':state.poseReady?'入镜就绪，开始摆姿势':'正在检查入镜…'):'我准备好了，开始跟做')
+        cameraStart.textContent = state.capturing ? (isPose?'正在保持姿势…':'正在跟做…') : (isPose?(state.poseFailed?'重试姿势识别':state.poseReady?'开始动作测试':'正在准备识别…'):'我准备好了，开始跟做')
         cameraStop.hidden = !state.cameraReady && !state.cameraBusy
         main.querySelector('#camera-placeholder').hidden = state.cameraReady
         main.querySelector('#camera-guide').hidden = !state.cameraReady || state.capturing
@@ -436,16 +436,15 @@ export const NaiwaView = {
         updateCamera()
         try {
           const engine=await ensurePoseEngine(controller.signal)
-          let readyCount=0
+          state.poseReady=true
           const check=()=>{
             if(controller.signal.aborted || !state.active || !state.cameraReady || state.capturing) return
             try {
               const frame=engine.readFrame(cameraVideo,0,true)
-              readyCount=frame.pose?readyCount+1:0
-              state.poseReady=readyCount>=2
-              const message=state.poseReady?'双肩和双手已看清，可以开始；坐着也可以。':frame.pose?'已看到上半身，请稍保持…':frame.framing
+              const assessment=assessPose(frame.pose,POSE_TARGETS[challenge.id])
+              const message=assessment.assessable?assessment.message:assessment.message+' 可以先开始，再调整姿势。'
               if(poseFeedback.textContent!==message) poseFeedback.textContent=message
-              poseFeedback.dataset.ready=String(state.poseReady)
+              poseFeedback.dataset.ready=String(assessment.assessable)
               updateCamera()
               posePreviewTimer=setTimeout(check,200)
             } catch(error) { fail(error) }
@@ -504,7 +503,7 @@ export const NaiwaView = {
           if (!opened || !state.active || cameraSession !== session) return
           state.cameraBusy = false
           state.cameraReady = true
-          cameraStatus.textContent = isPose ? '请按右上角参考图摆好上半身。看清双肩和双手后，即可开始；无需全身入镜。' : '镜头已打开。放稳手机，退后一点，让头、双手和膝盖入镜；准备好再开始。'
+          cameraStatus.textContent = isPose ? '按参考图自然摆姿势即可开始，不要求双手双肩同时露出。遮挡部位会标为未评估，识别覆盖不计入分数。' : '镜头已打开。放稳手机，让动作尽量留在画面里；准备好再开始。'
           for (const track of cameraVideo.srcObject.getVideoTracks()) {
             track.addEventListener('ended', () => {
               if (!state.active || cameraSession !== session) return
@@ -586,7 +585,7 @@ export const NaiwaView = {
             duration: reference.duration, fps: isPose?6:LIMITS.sampleFps, signal,
             referenceVideo: isPose?null:cameraReference,
             frameReader: isPose?(video,t)=>engine.readFrame(video,t,true):null,
-            acceptFrame:isPose?frame=>Boolean(frame.pose):null,
+            acceptFrame:isPose?frame=>assessPose(frame.pose,POSE_TARGETS[challenge.id]).assessable:null,
             maxWaitDuration:20,
             onProgress: ({progress,elapsed,duration,sample}) => {
               captureProgress.firstElementChild.style.width = Math.round(progress*100) + '%'
@@ -597,9 +596,10 @@ export const NaiwaView = {
                 cameraStatus.textContent = isPose?`保持「${challenge.name}」 ${seconds} / 5 秒`:`正在跟做 ${seconds} / ${Math.ceil(duration)} 秒 · 跟上参考动作的节奏`
               }
               if(isPose) {
-                const message=sample?.pose?`当前姿势匹配 ${Math.round(scorePose(sample.pose,POSE_TARGETS[challenge.id]))}% · 尽量保持稳定`:`计时已暂停 · ${sample?.framing||'请让双肩和双手入镜。'}`
+                const assessment=assessPose(sample?.pose,POSE_TARGETS[challenge.id])
+                const message=assessment.assessable?`动作相似度 ${Math.round(assessment.score)}%${assessment.missing.length?' · 部分遮挡，仅评估可见动作':''}`:`计时已暂停 · ${assessment.message}`
                 if(poseFeedback.textContent!==message) poseFeedback.textContent=message
-                poseFeedback.dataset.ready=String(Boolean(sample?.pose))
+                poseFeedback.dataset.ready=String(assessment.assessable)
               }
             },
           })
